@@ -3,47 +3,65 @@ package middleware
 import (
 	"backend-zerotrust-skripsi/internal/security/audit"
 	"backend-zerotrust-skripsi/internal/security/policies"
+	"backend-zerotrust-skripsi/internal/security/token" // Import token
 	"backend-zerotrust-skripsi/pkg/response"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-// ZeroTrustPEP adalah Policy Enforcement Point (PEP)
-func ZeroTrustPEP(engine *policies.Engine, logger *audit.Logger) gin.HandlerFunc {
+// Tambahkan parameter jwtService *token.JWTService
+func ZeroTrustPEP(engine *policies.Engine, logger *audit.Logger, jwtService *token.JWTService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			response.Error(c, http.StatusUnauthorized, "Missing Authorization Header", nil)
+			c.Abort()
+			return
+		}
 
-		// =====================================================
-		// 1. CONTEXT COLLECTION
-		// =====================================================
-		simulatedRole := c.GetHeader("X-User-Role")
-		simulatedID := c.GetHeader("X-User-ID")
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		
+		// Panggil ValidateToken dari struct service
+		claims, err := jwtService.ValidateToken(tokenString)
+		if err != nil {
+			logger.LogAccess("unknown", "unknown", c.ClientIP(), c.Request.URL.Path, c.Request.Method, false, "Invalid or Expired Token")
+			response.Error(c, http.StatusUnauthorized, "Token Invalid atau Expired", err.Error())
+			c.Abort()
+			return
+		}
 
+		currentUserID := strconv.Itoa(int(claims.UserID))
+		currentUserRole := claims.Role
+
+		// ... (Sisa kode policy evaluation & logging biarkan sama seperti sebelumnya) ...
+		
+		// Setup Context untuk Policy Engine
+		c.Set("user_id", claims.UserID)
+		c.Set("user_role", claims.Role)
+		
 		resourcePath := c.Request.URL.Path
 		method := c.Request.Method
 		clientIP := c.ClientIP()
 
 		requestContext := policies.AccessRequest{
-			SubjectID:   simulatedID,
-			SubjectRole: simulatedRole,
+			SubjectID:   currentUserID,
+			SubjectRole: currentUserRole,
 			Resource:    resourcePath,
 			Action:      method,
 			DeviceIP:    clientIP,
 			RequestTime: time.Now(),
 		}
 
-		// =====================================================
-		// 2. POLICY EVALUATION (PDP)
-		// =====================================================
 		result := engine.Evaluate(requestContext)
 
-		// =====================================================
-		// 3. AUDIT LOGGING
-		// =====================================================
 		logger.LogAccess(
-			simulatedID,
-			simulatedRole,
+			currentUserID,
+			currentUserRole,
 			clientIP,
 			resourcePath,
 			method,
@@ -51,9 +69,6 @@ func ZeroTrustPEP(engine *policies.Engine, logger *audit.Logger) gin.HandlerFunc
 			result.Reason,
 		)
 
-		// =====================================================
-		// 4. ENFORCEMENT (STANDARD RESPONSE)
-		// =====================================================
 		if !result.Allow {
 			response.Error(
 				c,
@@ -62,7 +77,7 @@ func ZeroTrustPEP(engine *policies.Engine, logger *audit.Logger) gin.HandlerFunc
 				gin.H{
 					"reason": result.Reason,
 					"context": gin.H{
-						"role": simulatedRole,
+						"role": currentUserRole,
 						"ip":   clientIP,
 					},
 				},
@@ -71,9 +86,6 @@ func ZeroTrustPEP(engine *policies.Engine, logger *audit.Logger) gin.HandlerFunc
 			return
 		}
 
-		// =====================================================
-		// 5. ALLOW → NEXT HANDLER
-		// =====================================================
 		c.Next()
 	}
 }

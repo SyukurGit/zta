@@ -1,52 +1,64 @@
 package main
 
 import (
-    "backend-zerotrust-skripsi/config"
-    "backend-zerotrust-skripsi/internal/app/handlers"
-    "backend-zerotrust-skripsi/internal/security/audit"
-    "backend-zerotrust-skripsi/internal/security/middleware"
-    "backend-zerotrust-skripsi/internal/security/policies"
-    "log"
-    "time"
+	"backend-zerotrust-skripsi/config"
+	"backend-zerotrust-skripsi/internal/app/handlers"
+	"backend-zerotrust-skripsi/internal/database"
+	"backend-zerotrust-skripsi/internal/security/audit"
+	"backend-zerotrust-skripsi/internal/security/middleware"
+	"backend-zerotrust-skripsi/internal/security/policies"
+	"backend-zerotrust-skripsi/internal/security/token"
+	"log"
+	"time"
 
-    "github.com/gin-contrib/cors" // Import library CORS
-    "github.com/gin-gonic/gin"
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
 )
 
 func main() {
-    // 1. Load Configuration
-    cfg := config.LoadConfig()
+	// 1. Load Config (Dari .env)
+	cfg := config.LoadConfig()
 
-    // 2. Init Components
-    // Policy Engine sekarang butuh Config
-    policyEngine := policies.NewEngine(cfg)
-    auditLogger := audit.NewLogger()
+	// 2. Connect Database (Inject Config)
+	database.ConnectDB(cfg)
 
-    r := gin.Default()
+	// 3. Init Services (Inject Config)
+	jwtService := token.NewJWTService(cfg.JWTSecret) // Service Auth
+	policyEngine := policies.NewEngine(cfg)          // Service Policy
+	auditLogger := audit.NewLogger()                 // Service Logger
 
-    // 3. SETUP CORS (Sangat Penting untuk Frontend Next.js)
-    // Tanpa ini, browser akan memblokir request dari localhost:3000
-    r.Use(cors.New(cors.Config{
-        AllowOrigins:     []string{"http://localhost:3000"}, // URL Frontend Next.js kamu
-        AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-        AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-User-Role", "X-User-ID"},
-        ExposeHeaders:    []string{"Content-Length"},
-        AllowCredentials: true,
-        MaxAge:           12 * time.Hour,
-    }))
+    // 4. Init Handlers
+    authHandler := handlers.NewAuthHandler(jwtService)
 
-    // 4. Setup Routes
-    api := r.Group("/api/v1")
-    
-    // Attach Zero Trust Middleware
-    api.Use(middleware.ZeroTrustPEP(policyEngine, auditLogger))
-    
-    {
-        api.GET("/finance/reports", handlers.GetFinancialReport)
-    }
+	r := gin.Default()
 
-    log.Printf("Sistem Audit Zero Trust berjalan di port %s", cfg.AppPort)
-    if err := r.Run(cfg.AppPort); err != nil {
-        log.Fatal(err)
-    }
+	// 5. CORS Setup
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:3000"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
+
+	// 6. Setup Routes
+	api := r.Group("/api/v1")
+
+	// A. PUBLIC ROUTES
+	// Sekarang memanggil method Login milik struct authHandler
+	api.POST("/auth/login", authHandler.Login)
+
+	// B. PROTECTED ROUTES
+	protected := api.Group("/")
+	// Inject jwtService ke Middleware
+	protected.Use(middleware.ZeroTrustPEP(policyEngine, auditLogger, jwtService))
+	{
+		protected.GET("/finance/reports", handlers.GetFinancialReport)
+	}
+
+	log.Printf("🛡️  Zero Trust System Running (Env: %s) on port %s", "Production-Like", cfg.AppPort)
+	if err := r.Run(cfg.AppPort); err != nil {
+		log.Fatal(err)
+	}
 }
