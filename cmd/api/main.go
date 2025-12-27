@@ -55,6 +55,16 @@ func main() {
 	protected.Use(middleware.ZeroTrustPEP(policyEngine, auditLogger, jwtService))
 	{
 		protected.GET("/finance/reports", handlers.GetFinancialReport)
+		// Route GET (Read)
+		// protected.GET("/finance/reports", handlers.GetFinancialReport)
+		
+		// Route POST (Create) - NEW!
+		// ZeroTrustPEP akan otomatis memblokir jika user bukan Auditor (sesuai engine.go tadi)
+		protected.POST("/finance/reports", handlers.CreateFinancialReport)
+
+
+		protected.PUT("/finance/reports/:id", handlers.UpdateFinancialReport)
+		
 	}
 
 	log.Printf("🛡️  Zero Trust System Running (Env: %s) on port %s", "Production-Like", cfg.AppPort)

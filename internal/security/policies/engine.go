@@ -3,80 +3,73 @@ package policies
 import (
 	"backend-zerotrust-skripsi/config"
 	"strings"
-	// "time"
 )
 
-// Engine adalah Policy Decision Point (PDP)
 type Engine struct {
-	Cfg *config.AppConfig // Inject konfigurasi aplikasi
+	Cfg *config.AppConfig
 }
 
-// NewEngine membuat instance PDP dengan config
 func NewEngine(cfg *config.AppConfig) *Engine {
 	return &Engine{Cfg: cfg}
 }
 
-// Evaluate adalah fungsi inti evaluasi kebijakan Zero Trust
 func (e *Engine) Evaluate(req AccessRequest) AccessResult {
 
 	// =========================================================
-	// DEFAULT DENY — Zero Trust Principle
+	// POLICY: Finance Reports Resource
+	// Menggunakan HasPrefix agar endpoint dengan ID (e.g., /reports/1) juga kena policy ini
 	// =========================================================
+	if strings.HasPrefix(req.Resource, "/api/v1/finance/reports") {
 
-	// =========================================================
-	// POLICY: Finance Reports
-	// =========================================================
-	if req.Resource == "/api/v1/finance/reports" {
-
+		// 1. GLOBAL CONTEXT CHECK (Wajib untuk semua method)
 		// -----------------------------------------------------
-		// POLICY 1: Role-based Access
-		// -----------------------------------------------------
-		if req.SubjectRole != "manager" && req.SubjectRole != "auditor" {
-			return AccessResult{
-				Allow:  false,
-				Reason: "Role tidak diizinkan mengakses data keuangan",
-			}
-		}
-
-		// -----------------------------------------------------
-		// POLICY 2: Time-based Access (Config-driven)
-		// -----------------------------------------------------
+		
+		// A. Cek Jam Kerja
 		hour := req.RequestTime.Hour()
 		if hour < e.Cfg.WorkStartHour || hour > e.Cfg.WorkEndHour {
-			return AccessResult{
-				Allow:  false,
-				Reason: "Akses di luar jam operasional yang ditentukan",
-			}
+			return AccessResult{Allow: false, Reason: "Akses ditolak: Diluar jam operasional"}
 		}
 
-		// -----------------------------------------------------
-		// POLICY 3: Network / IP-based Access (Config-driven)
-		// -----------------------------------------------------
-		isSafeNetwork :=
-			strings.HasPrefix(req.DeviceIP, e.Cfg.SafeNetwork) ||
-				req.DeviceIP == "::1"
-
+		// B. Cek Jaringan Aman
+		isSafeNetwork := strings.HasPrefix(req.DeviceIP, e.Cfg.SafeNetwork) || req.DeviceIP == "::1"
 		if !isSafeNetwork {
-			return AccessResult{
-				Allow:  false,
-				Reason: "Akses data sensitif harus dari jaringan kantor yang aman",
+			return AccessResult{Allow: false, Reason: "Akses ditolak: Wajib menggunakan jaringan kantor aman"}
+		}
+
+		// 2. ACTION-BASED ROLE CHECK (Segregation of Duties)
+		// -----------------------------------------------------
+		
+		// Skenario: MEMBUAT DATA (POST) -> Khusus Auditor
+		if req.Action == "POST" {
+			if req.SubjectRole != "auditor" {
+				return AccessResult{
+					Allow:  false, 
+					Reason: "Pelanggaran SoD: Hanya Auditor yang berhak membuat laporan baru",
+				}
 			}
+			return AccessResult{Allow: true, Reason: "Create Access Granted"}
 		}
 
-		// -----------------------------------------------------
-		// ALL POLICIES PASSED
-		// -----------------------------------------------------
-		return AccessResult{
-			Allow:  true,
-			Reason: "Policy Check Passed",
+		// Skenario: UPDATE/APPROVAL (PUT) -> Khusus Manager
+		if req.Action == "PUT" {
+			if req.SubjectRole != "manager" {
+				return AccessResult{
+					Allow:  false,
+					Reason: "Pelanggaran SoD: Hanya Manager yang berhak melakukan Approval",
+				}
+			}
+			return AccessResult{Allow: true, Reason: "Approval Access Granted"}
+		}
+
+		// Skenario: MELIHAT DATA (GET) -> Manager & Auditor
+		if req.Action == "GET" {
+			if req.SubjectRole != "manager" && req.SubjectRole != "auditor" {
+				return AccessResult{Allow: false, Reason: "Role tidak memiliki izin baca"}
+			}
+			return AccessResult{Allow: true, Reason: "Read Access Granted"}
 		}
 	}
 
-	// =========================================================
-	// UNKNOWN RESOURCE → DENY
-	// =========================================================
-	return AccessResult{
-		Allow:  false,
-		Reason: "Resource tidak didefinisikan dalam policy",
-	}
+	// Default Deny
+	return AccessResult{Allow: false, Reason: "Akses ditolak secara default"}
 }
